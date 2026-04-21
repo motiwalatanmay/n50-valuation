@@ -403,7 +403,7 @@ body{background:var(--bg);color:var(--txt);font-family:'Inter',sans-serif;font-s
     <div class="bt-form">
       <div class="bt-field">
         <label>Buy when PE &lt; </label>
-        <input type="number" id="sPeThresh" value="18" min="5" max="50" step="0.5" style="width:90px"/>
+        <input type="number" id="sPeThresh" value="18" min="5" max="80" step="0.5" style="width:90px"/>
       </div>
       <div class="bt-field">
         <label>Hold Period</label>
@@ -469,10 +469,11 @@ body{background:var(--bg);color:var(--txt);font-family:'Inter',sans-serif;font-s
     <strong>Strategy logic:</strong> Buy at close when PE first falls below the threshold (after cooldown). Sell after the fixed hold period. Win = positive simple return at exit.
     <br/><strong>Limitations to keep in mind:</strong>
     <ul style="margin:6px 0 0 16px;line-height:1.8">
-      <li><strong>Absolute threshold, not regime-adjusted</strong> &mdash; PE 18 meant different things at different rate cycles. The Backtest tab's &ldquo;% of rolling median&rdquo; adapts to regime changes.</li>
+      <li><strong>Absolute threshold, not regime-adjusted</strong> &mdash; PE 25 meant different things at different rate cycles. The Backtest tab's "% of rolling median" adapts to regime changes.</li>
       <li><strong>Win rate &ne; profitability</strong> &mdash; a 60% win rate can still be net negative if the losses are larger. Always read avg CAGR alongside win rate.</li>
       <li><strong>Small sample size</strong> &mdash; few signals = unreliable statistics. Flag shown if N &lt; 15.</li>
-      <li><strong>Composition bias</strong> &mdash; Nifty 50 rebalances periodically; historical PE includes stocks since removed from the index.</li>
+      <li><strong>Values winsorised</strong> &mdash; outliers capped at 1st&ndash;99th percentile in percentile rank calculations.</li>
+      <li><strong>Composition bias</strong> &mdash; Nifty 50 rebalances periodically; historical PE includes stocks since dropped from the index.</li>
       <li><strong>No transaction costs</strong> &mdash; assumes frictionless entry and exit.</li>
     </ul>
   </div>
@@ -497,7 +498,7 @@ Rationale:
   &bull; 5yr (60%) &mdash; dominant anchor; a full market cycle
   &bull; 10yr (10%) &mdash; long-run mean, given low weight to allow for structural re-rating
     </div>
-    <p>All three windows are fully available since data goes back to 1999 &mdash; weights are applied at full 30%/60%/10%.</p>
+    <p>If any window is unavailable (e.g. index data starts 2016, so 10yr window is partial), weights redistribute proportionally.</p>
     <h3>Valuation Bands</h3>
     <p>The current P/E (or P/B) is expressed as a percentage of the weighted reference. The bands are:</p>
     <div class="band-demo">
@@ -509,13 +510,13 @@ Rationale:
     </div>
     <p>The neutral band is intentionally asymmetric (90&ndash;105%) to account for the natural positive drift of index earnings over time.</p>
     <h3>Secondary Signal: Percentile Rank</h3>
-    <p>The current value is also ranked as a percentile within its 5-year <strong>winsorised</strong> history (outliers clipped at 1st&ndash;99th percentile). If the primary and secondary signals disagree, a <em>divergence flag</em> appears.</p>
+    <p>The current value is also ranked as a percentile within its 5-year <strong>winsorised</strong> history (outliers clipped at 1st&ndash;99th percentile). This is critical for NMid150 &mdash; the COVID-era PE spike reached 813x, which would completely distort unwinsorised ranks. After winsorisation the outlier is capped and the rank becomes meaningful. If the primary and secondary signals disagree, a <em>divergence flag</em> appears.</p>
     <h3>Trend Direction Indicators</h3>
     <p>Each metric card shows a small badge comparing the current value to the value approximately 3 months ago (63 trading days back). This helps identify whether valuation pressure is rising or easing.</p>
   </div>
   <div class="help-section">
     <h2>Historical Medians Tab</h2>
-    <p>This tab shows how the <strong>rolling medians themselves have changed over time</strong> &mdash; letting you spot structural re-rating. For example, if the 5yr median P/E has risen from 18&times; (2015) to 22&times; (2024), paying 21&times; today may not be as expensive as it appears on a long-horizon basis.</p>
+    <p>This tab shows how the <strong>rolling medians themselves have changed over time</strong> &mdash; letting you spot structural re-rating. For example, if the 5yr median P/E has risen from 25&times; (2019) to 35&times; (2024), paying 34&times; today may not be as expensive as it appears on a long-horizon basis.</p>
     <p>Annual frequency shows year-end snapshots. Quarterly shows March/June/September/December end-of-quarter values.</p>
   </div>
   <div class="help-section">
@@ -1350,9 +1351,10 @@ function computeStats() {
   var pePct = peRef>0 ? (curPE/peRef)*100 : null;
   var pbPct = pbRef>0 ? (curPB/pbRef)*100 : null;
 
+  // Percentile rank — PE winsorised at 99th to handle COVID outlier (813x)
   function pctileRank(sliceFn, cur, years) {
     var vals = sliceFn(years);
-    var w = winsorise(vals, 1, 99);
+    var w = winsorise(vals, 1, 99);  // cap at 99th pct — removes COVID PE spike
     var curCapped = Math.min(cur, w.length ? sortedArr(w)[w.length-1] : cur);
     var below = w.filter(function(v){return v<=curCapped;}).length;
     return w.length ? (below/w.length)*100 : null;
@@ -1360,6 +1362,7 @@ function computeStats() {
   var pePctile = pctileRank(getPEs, curPE, 5);
   var pbPctile = pctileRank(getPBs, curPB, 5);
 
+  // Divergence check
   function divergence(refBand, pctile) {
     if (pctile==null) return null;
     var pBand;
@@ -1381,6 +1384,7 @@ function computeStats() {
   var peDivergence = divergence(peBand, pePctile);
   var pbDivergence = divergence(pbBand, pbPctile);
 
+  // EPS metrics
   var epsRows = rows.filter(function(r){return r[2]>0;}).map(function(r){return {date:r[0],eps:r[1]/r[2]};});
   var oneYrAgo = dateAddYears(curDate,-1);
   var yrAgoRow = null;
@@ -1397,6 +1401,7 @@ function computeStats() {
   }
   var epsTurning=(eps90&&eps180&&curEPS>eps90.eps&&curEPS>eps180.eps&&epsYoY!=null&&Math.abs(epsYoY)<=5);
 
+  // Trend direction: compare current PE/PB to ~63 trading days ago (3 months)
   var TREND_LOOKBACK = 63;
   var trendIdx = Math.max(0, rows.length - 1 - TREND_LOOKBACK);
   var trendRow = rows[trendIdx];
@@ -1428,6 +1433,7 @@ function renderDashboard() {
   var s = computeStats();
   if (!s) return;
 
+  // Hero
   document.getElementById('heroValue').textContent = '\u20b9'+s.curIndex.toLocaleString('en-IN',{maximumFractionDigits:0});
   document.getElementById('heroDate').textContent = 'As of '+s.curDate;
 
@@ -1435,8 +1441,10 @@ function renderDashboard() {
   bb.innerHTML = '<span class="band-pill band-'+s.peBand+'">PE: '+bandLabel(s.peBand)+'</span>'
                + '<span class="band-pill band-'+s.pbBand+'" style="margin-left:6px">PB: '+bandLabel(s.pbBand)+'</span>';
 
+  // PE Trend badge
   renderTrendBadge('peTrend', s.peTrend);
 
+  // PE Card
   document.getElementById('peVal').textContent = fmt(s.curPE);
   var pePill = document.getElementById('pePill');
   pePill.className = 'mc-pct band-pill band-'+s.peBand;
@@ -1454,8 +1462,10 @@ function renderDashboard() {
   var peDivEl = document.getElementById('peDivFlag');
   if (s.peDivergence) { peDivEl.style.display='block'; peDivEl.textContent=s.peDivergence; } else { peDivEl.style.display='none'; }
 
+  // PB Trend badge
   renderTrendBadge('pbTrend', s.pbTrend);
 
+  // PB Card
   document.getElementById('pbVal').textContent = fmt(s.curPB);
   var pbPill = document.getElementById('pbPill');
   pbPill.className = 'mc-pct band-pill band-'+s.pbBand;
@@ -1473,6 +1483,7 @@ function renderDashboard() {
   var pbDivEl = document.getElementById('pbDivFlag');
   if (s.pbDivergence) { pbDivEl.style.display='block'; pbDivEl.textContent=s.pbDivergence; } else { pbDivEl.style.display='none'; }
 
+  // DY Card
   document.getElementById('dyVal').textContent = s.curDY ? fmt(s.curDY)+'%' : '\u2014';
   document.getElementById('dySubtext').textContent = s.dy5m ? '5yr median: '+fmt(s.dy5m)+'%' : '';
   document.getElementById('dyTable').innerHTML = buildMedianTable([
@@ -1481,6 +1492,7 @@ function renderDashboard() {
     ['10yr Median', s.dy10m, null, '%']
   ]);
 
+  // EPS
   var eg = document.getElementById('epsGrid');
   eg.innerHTML = epsGrid([
     {label:'Current EPS', val: s.curEPS ? fmt(s.curEPS,0) : '\u2014', sub:''},
@@ -1488,6 +1500,7 @@ function renderDashboard() {
     {label:'vs Peak EPS', val: s.epsVsPeak ? fmt(s.epsVsPeak,1)+'%' : '\u2014', sub:'of all-time high'}
   ]);
 
+  // Sparkline
   renderSparkline(s);
 }
 
@@ -1548,6 +1561,7 @@ function renderSparkline(stats) {
   var W=svg.clientWidth||700, H=140, pad={t:10,r:20,b:30,l:40};
   var iW=W-pad.l-pad.r, iH=H-pad.t-pad.b;
 
+  // Winsorise PE values for chart display to handle COVID spike
   var pes = rows.map(function(r){return r[2];});
   var pesW = winsorise(pes, 1, 99);
   var peMin=Math.min.apply(null,pesW), peMax=Math.max.apply(null,pesW);
@@ -1563,15 +1577,17 @@ function renderSparkline(stats) {
 
   var pePoints = rows.map(function(r,i){return xp(i)+','+yp(r[2]);}).join(' ');
 
+  // Y axis labels
   var yLabels = '';
   var ticks = 4;
   for(var i=0;i<=ticks;i++){
     var v = peMin + (yRange*i/ticks);
     var y = yp(v);
-    yLabels += '<text x="' +(pad.l-6)+'" y="'+y+'" text-anchor="end" fill="var(--txt3)" font-size="10">'+v.toFixed(1)+'</text>';
-    yLabels += '<line x1="'+pad.l+'" x2="' +(pad.l+iW)+'" y1="'+y+'" y2="'+y+'" stroke="var(--brd)" stroke-width="0.5"/>';
+    yLabels += '<text x="'+(pad.l-6)+'" y="'+y+'" text-anchor="end" fill="var(--txt3)" font-size="10">'+v.toFixed(1)+'</text>';
+    yLabels += '<line x1="'+pad.l+'" x2="'+(pad.l+iW)+'" y1="'+y+'" y2="'+y+'" stroke="var(--brd)" stroke-width="0.5"/>';
   }
 
+  // X axis labels (years)
   var xLabels = '';
   var years = {};
   rows.forEach(function(r,i){
@@ -1580,18 +1596,19 @@ function renderSparkline(stats) {
   });
   Object.keys(years).sort().forEach(function(yr){
     var i=years[yr], x=xp(i);
-    xLabels+='<text x="'+x+'" y="' +(H-8)+'" text-anchor="middle" fill="var(--txt3)" font-size="10">'+yr+'</text>';
+    xLabels+='<text x="'+x+'" y="'+(H-8)+'" text-anchor="middle" fill="var(--txt3)" font-size="10">'+yr+'</text>';
   });
 
+  // Ref lines
   var medY = yp(peMedian3yr), refY = yp(peRef);
   var clampY = function(y){return Math.max(pad.t, Math.min(pad.t+iH, y));};
 
   svg.setAttribute('viewBox','0 0 '+W+' '+H);
   svg.innerHTML = yLabels + xLabels
-    + '<line x1="'+pad.l+'" x2="'+pad.l+'" y1="'+pad.t+'" y2="' +(pad.t+iH)+'" stroke="var(--brd)" stroke-width="1"/>\'
-    + '<polyline points="'+pePoints+'" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linejoin="round"/>\'
-    + (peMedian3yr ? '<line x1="'+pad.l+'" x2="' +(pad.l+iW)+'" y1="'+clampY(medY)+'" y2="'+clampY(medY)+'" stroke="#a78bfa" stroke-width="1.5" opacity=".8"/>' : '')
-    + (peRef ? '<line x1="'+pad.l+'" x2="' +(pad.l+iW)+'" y1="'+clampY(refY)+'" y2="'+clampY(refY)+'" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6,3" opacity=".8"/>' : '');
+    + '<line x1="'+pad.l+'" x2="'+pad.l+'" y1="'+pad.t+'" y2="'+(pad.t+iH)+'" stroke="var(--brd)" stroke-width="1"/>'
+    + '<polyline points="'+pePoints+'" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linejoin="round"/>'
+    + (peMedian3yr ? '<line x1="'+pad.l+'" x2="'+(pad.l+iW)+'" y1="'+clampY(medY)+'" y2="'+clampY(medY)+'" stroke="#a78bfa" stroke-width="1.5" opacity=".8"/>' : '')
+    + (peRef ? '<line x1="'+pad.l+'" x2="'+(pad.l+iW)+'" y1="'+clampY(refY)+'" y2="'+clampY(refY)+'" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6,3" opacity=".8"/>' : '');
 }
 
 // ============================================================
@@ -1654,13 +1671,13 @@ function renderMedians() {
     var tr = document.createElement('tr');
     if(r.isCurrent) tr.className='cur-row';
     tr.innerHTML =
-      '<td>'+(r.isCurrent?'\u25b6 ':'')+( r.date.slice(0,7)||r.date)+'</td>'
+      '<td>'+(r.isCurrent?'\u25b6 ':'')+(r.date.slice(0,7)||r.date)+'</td>'
       +'<td>'+fmt(r.actual)+'</td>'
       +'<td>'+fmt(r.m3)+'</td>'
       +'<td>'+fmt(r.m5)+'</td>'
       +'<td>'+fmt(r.m10)+'</td>'
       +'<td>'+fmt(r.ref)+'</td>'
-      +'<td class="'+pctCls+'">' +(r.pct?fmt(r.pct,1)+'%':'\u2014')+'</td>';
+      +'<td class="'+pctCls+'">'+(r.pct?fmt(r.pct,1)+'%':'\u2014')+'</td>';
     tbody.appendChild(tr);
   });
 }
@@ -1693,24 +1710,26 @@ function renderMediansChart(tableRows, metric) {
     return pts ? '<polyline points="'+pts+'" fill="none" stroke="'+col+'" stroke-width="1.8" stroke-linejoin="round" opacity=".9"/>' : '';
   }
 
+  // Y axis
   var yLabels='';
   for(var i=0;i<=4;i++){
     var v=minV+(vRange*i/4), y=yp(v);
-    yLabels+='<text x="' +(pad.l-5)+'" y="'+y+'" text-anchor="end" fill="var(--txt3)" font-size="10">'+v.toFixed(1)+'</text>';
-    yLabels+='<line x1="'+pad.l+'" x2="' +(pad.l+iW)+'" y1="'+y+'" y2="'+y+'" stroke="var(--brd)" stroke-width="0.5"/>';
+    yLabels+='<text x="'+(pad.l-5)+'" y="'+y+'" text-anchor="end" fill="var(--txt3)" font-size="10">'+v.toFixed(1)+'</text>';
+    yLabels+='<line x1="'+pad.l+'" x2="'+(pad.l+iW)+'" y1="'+y+'" y2="'+y+'" stroke="var(--brd)" stroke-width="0.5"/>';
   }
+  // X axis
   var xLabels='', prevYr='';
   tableRows.forEach(function(r){
     var yr=r.date.slice(0,4);
     if(yr!==prevYr){
-      xLabels+='<text x="'+xp(r.date)+'" y="' +(H-6)+'" text-anchor="middle" fill="var(--txt3)" font-size="10">'+yr+'</text>';
+      xLabels+='<text x="'+xp(r.date)+'" y="'+(H-6)+'" text-anchor="middle" fill="var(--txt3)" font-size="10">'+yr+'</text>';
       prevYr=yr;
     }
   });
 
   svg.setAttribute('viewBox','0 0 '+W+' '+H);
   svg.innerHTML = yLabels + xLabels
-    + '<line x1="'+pad.l+'" x2="'+pad.l+'" y1="'+pad.t+'" y2="' +(pad.t+iH)+'" stroke="var(--brd)" stroke-width="1"/>\'
+    + '<line x1="'+pad.l+'" x2="'+pad.l+'" y1="'+pad.t+'" y2="'+(pad.t+iH)+'" stroke="var(--brd)" stroke-width="1"/>'
     + polyline(tableRows.map(function(r){return r.actual;}), '#60a5fa')
     + polyline(tableRows.map(function(r){return r.m3;}), '#4ade80')
     + polyline(tableRows.map(function(r){return r.m5;}), '#f59e0b')
@@ -1865,7 +1884,8 @@ function renderBacktest(signals, metric, periodBH, fromDate, toDate) {
   var avg1y  = avgOf(signals.map(function(s){return s.sig1y;}).filter(function(v){return v!=null;}));
 
   var bhSub = periodBH!=null
-    ? 'vs '+fmtPct(periodBH,1)+' B&H ('+fromDate.slice(0,4)+'\u2013'+toDate.slice(0,4)+')' : '';
+    ? 'vs '+fmtPct(periodBH,1)+' B&H ('+fromDate.slice(0,4)+'\u2013'+toDate.slice(0,4)+')'
+    : '';
 
   sumDiv.innerHTML = [
     {label:'Signals',          val: signals.length,                         sub:'total triggers fired'},
@@ -1925,7 +1945,7 @@ function avgOf(arr) {
 }
 
 // ============================================================
-// SIMPLE STRATEGY
+// SIMPLE STRATEGY BACKTEST
 // ============================================================
 function runSimpleBT() {
   var threshold = parseFloat(document.getElementById('sPeThresh').value);
@@ -2021,20 +2041,22 @@ function renderSimpleBT(signals, threshold, holdDays, rows, timeBelowPct, fromDa
       +'<div class="bt-stat-sub">'+s.sub+'</div></div>';
   }).join('');
 
+  // Chart
   renderSimpleChart(rows, signals, threshold);
 
+  // Table
   var tbody='';
   signals.slice().reverse().forEach(function(s){
     var rowCls = s.isOpen?'open':(s.hit?'hit':'miss');
-    tbody+='<tr class="'+rowCls+'">\'
-      +'<td>'+s.date+'</td>\'
-      +'<td>'+fmt(s.pe)+'</td>\'
-      +'<td>'+(s.exitDate||'\u2014')+'</td>\'
-      +'<td>'+(s.exitPrice?'\u20b9'+s.exitPrice.toLocaleString('en-IN',{maximumFractionDigits:0}):'\u2014')+'</td>\'
-      +'<td>'+(s.simpleRet!=null?fmtPct(s.simpleRet,1):s.isOpen?'OPEN':'\u2014')+'</td>\'
+    tbody+='<tr class="'+rowCls+'">'
+      +'<td>'+s.date+'</td>'
+      +'<td>'+fmt(s.pe)+'</td>'
+      +'<td>'+(s.exitDate||'\u2014')+'</td>'
+      +'<td>'+(s.exitPrice?'\u20b9'+s.exitPrice.toLocaleString('en-IN',{maximumFractionDigits:0}):'\u2014')+'</td>'
+      +'<td>'+(s.simpleRet!=null?fmtPct(s.simpleRet,1):s.isOpen?'OPEN':'\u2014')+'</td>'
       +'<td>'+(s.annRet!=null?fmtPct(s.annRet,1):s.isOpen?'OPEN':'\u2014')+'</td>';
     var rc = s.isOpen?'cagr-open':(s.hit?'cagr-pos':'cagr-neg');
-    tbody+='<td class="'+rc+'">' +(s.isOpen?'OPEN':(s.hit?'\u2713 Hit':'\u2717 Miss'))+'</td></tr>';
+    tbody+='<td class="'+rc+'">'+(s.isOpen?'OPEN':(s.hit?'\u2713 Hit':'\u2717 Miss'))+'</td></tr>';
   });
   document.getElementById('sbtBody').innerHTML=tbody;
 }
@@ -2048,6 +2070,7 @@ function renderSimpleChart(rows, signals, threshold) {
   if(!peRows.length){return;}
 
   var pes = peRows.map(function(r){return r[2];});
+  // Winsorise for chart display
   var pesW = winsorise(pes, 1, 99);
   var peMin=Math.min.apply(null,pesW), peMax=Math.max.apply(null,pesW);
   peMax=Math.max(peMax,threshold*1.1);
@@ -2061,18 +2084,20 @@ function renderSimpleChart(rows, signals, threshold) {
     return pad.t+iH-((vC-peMin)/vRange)*iH;
   }
 
+  // Grid
   var grid='', ticks=4;
   for(var i=0;i<=ticks;i++){
     var v=peMin+(vRange*i/ticks), y=yp(v);
-    grid+='<text x="' +(pad.l-5)+'" y="'+y+'" text-anchor="end" fill="var(--txt3)" font-size="10">'+v.toFixed(0)+'</text>';
-    grid+='<line x1="'+pad.l+'" x2="' +(pad.l+iW)+'" y1="'+y+'" y2="'+y+'" stroke="var(--brd)" stroke-width="0.5"/>';
+    grid+='<text x="'+(pad.l-5)+'" y="'+y+'" text-anchor="end" fill="var(--txt3)" font-size="10">'+v.toFixed(0)+'</text>';
+    grid+='<line x1="'+pad.l+'" x2="'+(pad.l+iW)+'" y1="'+y+'" y2="'+y+'" stroke="var(--brd)" stroke-width="0.5"/>';
   }
 
+  // X labels
   var xLabels='', prevYr='';
   peRows.forEach(function(r){
     var yr=r[0].slice(0,4);
     if(yr!==prevYr){
-      xLabels+='<text x="'+xp(r[0])+'" y="' +(H-6)+'" text-anchor="middle" fill="var(--txt3)" font-size="10">'+yr+'</text>';
+      xLabels+='<text x="'+xp(r[0])+'" y="'+(H-6)+'" text-anchor="middle" fill="var(--txt3)" font-size="10">'+yr+'</text>';
       prevYr=yr;
     }
   });
@@ -2090,9 +2115,9 @@ function renderSimpleChart(rows, signals, threshold) {
 
   svg.setAttribute('viewBox','0 0 '+W+' '+H);
   svg.innerHTML = grid + xLabels
-    + '<line x1="'+pad.l+'" x2="'+pad.l+'" y1="'+pad.t+'" y2="' +(pad.t+iH)+'" stroke="var(--brd)" stroke-width="1"/>\'
-    + '<polyline points="'+pts+'" fill="none" stroke="#60a5fa" stroke-width="1.8" stroke-linejoin="round"/>\'
-    + '<line x1="'+pad.l+'" x2="' +(pad.l+iW)+'" y1="'+thyClamped+'" y2="'+thyClamped+'" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6,3"/>\'
+    + '<line x1="'+pad.l+'" x2="'+pad.l+'" y1="'+pad.t+'" y2="'+(pad.t+iH)+'" stroke="var(--brd)" stroke-width="1"/>'
+    + '<polyline points="'+pts+'" fill="none" stroke="#60a5fa" stroke-width="1.8" stroke-linejoin="round"/>'
+    + '<line x1="'+pad.l+'" x2="'+(pad.l+iW)+'" y1="'+thyClamped+'" y2="'+thyClamped+'" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6,3"/>'
     + dots;
 }
 
